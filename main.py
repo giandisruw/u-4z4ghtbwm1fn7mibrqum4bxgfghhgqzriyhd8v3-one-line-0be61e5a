@@ -6,17 +6,63 @@ $MAKEFUN_OUTPUT_DIR/entry.txt when set). Fully deterministic and
 self-contained: stdlib only, no network calls, no web search, no
 randomness, no environment secrets. The line is written byte for byte
 as judged — no trailing newline, no title, no explanation.
+
+Revision: the write path is now hardened — the line is validated
+before writing, flushed to disk with fsync, and verified by a
+read-back gate that refuses to finish unless the bytes on disk match
+the intended line exactly.
 """
 import os
 from pathlib import Path
 
 LINE = "My smart fridge judges my midnight snacks out loud now, so I unplugged it and it filed a complaint."
 
+MIN_CHARS = 1
+MAX_CHARS = 200
+
+
+def validate(line: str) -> str:
+    """Reject anything that is not exactly one judged line."""
+    if not isinstance(line, str):
+        raise TypeError("entry line must be a string")
+    if not MIN_CHARS <= len(line) <= MAX_CHARS:
+        raise ValueError(
+            f"entry line must be {MIN_CHARS}-{MAX_CHARS} chars, got {len(line)}"
+        )
+    if "\n" in line or "\r" in line:
+        raise ValueError("entry line must be a single line")
+    if line != line.strip():
+        raise ValueError("entry line must not have leading/trailing whitespace")
+    return line
+
+
+def write_entry(path: Path, line: str) -> None:
+    """Write the line byte-for-byte and flush it durably to disk."""
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(line)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def verify_written(path: Path, expected: str) -> None:
+    """Read-back gate: the bytes on disk must equal the intended line."""
+    actual = path.read_text(encoding="utf-8")
+    if actual != expected:
+        raise RuntimeError(
+            f"verification failed: entry.txt holds {len(actual)} chars, "
+            f"expected {len(expected)}"
+        )
+    if path.read_bytes() != expected.encode("utf-8"):
+        raise RuntimeError("verification failed: entry.txt bytes differ")
+
 
 def main() -> None:
+    line = validate(LINE)
     out_dir = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "entry.txt").write_text(LINE, encoding="utf-8")
+    target = out_dir / "entry.txt"
+    write_entry(target, line)
+    verify_written(target, line)
 
 
 if __name__ == "__main__":
